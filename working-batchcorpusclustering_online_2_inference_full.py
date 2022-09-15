@@ -54,9 +54,7 @@ USE_DOWNSAMPLED_EMBEDDINGS = False #@param {"type": "boolean"}
 #DATASET_DIR = './DataSetColab/'
 #DATASET_DIR = './DataSet-Lite/'
 #DATASET_DIR = './DataSet-Full-Fixed-3/'
-DATASET_DIR = './DataSet-Full-Unique-Shards/'
-
-NUM_RUN = 1
+DATASET_DIR = './DataSet-Full-Unique/'
 FITTED_MBKS_DIR = os.path.join(DATASET_DIR, 'fitted-mbks/')
 
 CLUSTER_BEAM_SIZE = 10 #@param [1, 2, 5, 10, 100] {"type":"raw"}
@@ -81,7 +79,7 @@ INTENT_CONFIDENCE_THRESHOLD = 0.9
 
 EMBEDDER = SentenceTransformersEmbedder('all-mpnet-base-v2', device_type='cuda')
 
-def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
+def create_tmp_embeddings(embedder):
     emb_to_idx = dict()
     embedded_sentences = []
     downsampled_embedded_sentences = []
@@ -104,14 +102,14 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
     fitted_examples = 0
     finished_training = False
 
-    TEXT_RECORDS_DIR = os.path.join(DATASET_DIR, 'text-records/', 'text-records-{:04d}'.format(NUM_RUN)) #os.path.join(DATASET_DIR, 'text-records/')
+    TEXT_RECORDS_DIR = os.path.join(DATASET_DIR, 'text-records/')
     DOWNSAMPLED_EMBEDDINGS_RECORDS_DIR = os.path.join(DATASET_DIR, 'downsampled-embedding-records/')
     NORMALIZED_DOWNSAMPLED_EMBEDDINGS_RECORDS_DIR = os.path.join(DATASET_DIR, 'normalized-downsampled-embedding-records/')
     TEMPORARY_EMBEDDINGS_DIR = os.path.join(DATASET_DIR, 'tmp-embeddings/')
     UNCOMPRESSED_BINS_DIR = os.path.join(DATASET_DIR, 'bins-uncompressed/')
     FITTED_MBKS_DIR = os.path.join(DATASET_DIR, 'fitted-mbks/')
 
-    #kmeans = MiniBatchKMeans(n_clusters=NUM_CLUSTERS, random_state=0, max_iter=KMEANS_MAX_ITER, batch_size=KMEANS_BATCH_SIZE)
+    kmeans = MiniBatchKMeans(n_clusters=NUM_CLUSTERS, random_state=0, max_iter=KMEANS_MAX_ITER, batch_size=KMEANS_BATCH_SIZE)
     crt_kmeans_dump_idx = 0
 
     X = None
@@ -123,7 +121,7 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
     all_records = os.listdir(TEXT_RECORDS_DIR)
     all_records.sort()
     crt_tmp_emb_idx = 0
-    processed_examples = previous_processed_examples
+    processed_examples = 0
     
     num_loaded_examples = 0
     kmeans_x_examples = 0
@@ -170,7 +168,6 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
                 f = open(os.path.join(TEMPORARY_EMBEDDINGS_DIR, 'emb-{:04d}.bin'.format(crt_tmp_emb_idx)), 'wb')
                 #pickle.dump(X, f)
                 pickle.dump(X.detach().cpu().numpy(), f)
-                X = None # <---------------------------------------------------------------------------------------------------------------------------------------------------------------------
                 crt_tmp_emb_idx += 1
                 f.close()
 
@@ -203,7 +200,7 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
                 print('\t\tEnded Kmeans partial fitting in {} seconds'.format(end_kmeans - start_kmeans))
 
                 # dump partially fit kmeans obj
-                crt_kmeans_obj_path = os.path.join(FITTED_MBKS_DIR, 'shard-{:04d}-fitted-mbk-{:04d}.bin'.format(NUM_RUN, crt_kmeans_dump_idx))
+                crt_kmeans_obj_path = os.path.join(FITTED_MBKS_DIR, 'fitted-mbk-{:04d}.bin'.format(crt_kmeans_dump_idx))
                 g = open(crt_kmeans_obj_path, 'wb')
                 pickle.dump(kmeans, g)
                 g.close()
@@ -217,9 +214,9 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
                         # dump large bins into partial bin file
                         bins[label].append((kmeans_X[idx_label], processed_examples + idx_label))
                         if len(bins[label]) > MAX_BIN_SIZE:
-                            ##print('\t\t\tOffloading cluster {} ({})'.format(label, bins_idx.get(label, 0)))
+                            print('\t\t\tOffloading cluster {} ({})'.format(label, bins_idx.get(label, 0)))
                             crt_bin_file_idx = bins_idx.get(label, 0)
-                            crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR, 'shard-{:04d}-bin-{:04d}-{:04d}.bin'.format(NUM_RUN, label, crt_bin_file_idx))
+                            crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR, 'bin-{:04d}-{:04d}.bin'.format(label, crt_bin_file_idx))
                             f = open(crt_bin_file_path, 'wb')
                             pickle.dump(bins[label], f)
                             num_dumped_examples += len(bins[label])
@@ -229,7 +226,6 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
                             del bins[label]
 
                 processed_examples += kmeans_X.shape[0]
-                kmeans_X = None # <-----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
                 # remove tmp embds files after processing them
                 for idx_tmp_emb, tmp_emb in enumerate(tmp_embds_files):
@@ -274,7 +270,7 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
             print('\t\tEnded Kmeans partial fitting in {} seconds'.format(end_kmeans - start_kmeans))
 
             # dump partially fit kmeans obj
-            crt_kmeans_obj_path = os.path.join(FITTED_MBKS_DIR, 'shard-{:04d}-fitted-mbk-{:04d}.bin'.format(NUM_RUN, crt_kmeans_dump_idx))
+            crt_kmeans_obj_path = os.path.join(FITTED_MBKS_DIR, 'fitted-mbk-{:04d}.bin'.format(crt_kmeans_dump_idx))
             g = open(crt_kmeans_obj_path, 'wb')
             pickle.dump(kmeans, g)
             g.close()
@@ -288,9 +284,9 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
                     # dump large bins into partial bin file
                     bins[label].append((kmeans_X[idx_label], processed_examples + idx_label))
                     if len(bins[label]) > MAX_BIN_SIZE:
-                        ##print('\t\t\tOffloading cluster {} ({})'.format(label, bins_idx.get(label, 0)))
+                        print('\t\t\tOffloading cluster {} ({})'.format(label, bins_idx.get(label, 0)))
                         crt_bin_file_idx = bins_idx.get(label, 0)
-                        crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR, 'shard-{:04d}-bin-{:04d}-{:04d}.bin'.format(NUM_RUN, label, crt_bin_file_idx))
+                        crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR, 'bin-{:04d}-{:04d}.bin'.format(label, crt_bin_file_idx))
                         f = open(crt_bin_file_path, 'wb')
                         pickle.dump(bins[label], f)
                         num_dumped_examples += len(bins[label])
@@ -301,7 +297,6 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
 
             print('Adding nothing (kmeans_X shape is {})'.format(kmeans_X.shape))
             processed_examples += kmeans_X.shape[0]
-            kmeans_X = None # <------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
             # remove tmp embds files after processing them
             for idx_tmp_emb, tmp_emb in enumerate(tmp_embds_files):
@@ -331,48 +326,47 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
 
 
         # fit kmeans with remaining X data
-        if X is not None:
-            print('\t\tStarted Kmeans partial fitting with remaining X examples ({})'.format(X.shape[0]))
-            start_kmeans = time.time()
-            kmeans_X = X.detach().cpu().numpy()
-            kmeans = kmeans.partial_fit(kmeans_X)
-            kmeans_x_examples += kmeans_X.shape[0]
-            end_kmeans = time.time()
-            print('\t\tEnded Kmeans partial fitting in {} seconds'.format(end_kmeans - start_kmeans))
+        print('\t\tStarted Kmeans partial fitting with remaining X examples ({})'.format(X.shape[0]))
+        start_kmeans = time.time()
+        kmeans_X = X.detach().cpu().numpy()
+        kmeans = kmeans.partial_fit(kmeans_X)
+        kmeans_x_examples += kmeans_X.shape[0]
+        end_kmeans = time.time()
+        print('\t\tEnded Kmeans partial fitting in {} seconds'.format(end_kmeans - start_kmeans))
 
-            # dump partially fit kmeans obj (with remaining X data)
-            crt_kmeans_obj_path = os.path.join(FITTED_MBKS_DIR, 'shard-{:04d}-fitted-mbk-{:04d}.bin'.format(NUM_RUN, crt_kmeans_dump_idx))
-            g = open(crt_kmeans_obj_path, 'wb')
-            pickle.dump(kmeans, g)
-            g.close()
-            crt_kmeans_dump_idx += 1
+        # dump partially fit kmeans obj (with remaining X data)
+        crt_kmeans_obj_path = os.path.join(FITTED_MBKS_DIR, 'fitted-mbk-{:04d}.bin'.format(crt_kmeans_dump_idx))
+        g = open(crt_kmeans_obj_path, 'wb')
+        pickle.dump(kmeans, g)
+        g.close()
+        crt_kmeans_dump_idx += 1
 
-            # add newly clustered examples to the bins
-            for idx_label, label in enumerate(kmeans.labels_):
-                if not label in bins:
-                    bins[label] = [(kmeans_X[idx_label], processed_examples + idx_label)]
-                else:
-                    # dump large bins into partial bin file
-                    bins[label].append((kmeans_X[idx_label], processed_examples + idx_label))
-                    if len(bins[label]) > MAX_BIN_SIZE:
-                        ##print('\t\t\tOffloading cluster {} ({})'.format(label, bins_idx.get(label, 0)))
-                        crt_bin_file_idx = bins_idx.get(label, 0)
-                        crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR, 'shard-{:04d}-bin-{:04d}-{:04d}.bin'.format(NUM_RUN, label, crt_bin_file_idx))
-                        f = open(crt_bin_file_path, 'wb')
-                        pickle.dump(bins[label], f)
-                        #print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Dumped another {} examples (total: {})'.format(len(bins[label]), num_dumped_examples))
-                        num_dumped_examples += len(bins[label])
-                        f.close()
-                        bins_idx[label] = crt_bin_file_idx + 1
-                        del bins[label]
+        # add newly clustered examples to the bins
+        for idx_label, label in enumerate(kmeans.labels_):
+            if not label in bins:
+                bins[label] = [(kmeans_X[idx_label], processed_examples + idx_label)]
+            else:
+                # dump large bins into partial bin file
+                bins[label].append((kmeans_X[idx_label], processed_examples + idx_label))
+                if len(bins[label]) > MAX_BIN_SIZE:
+                    print('\t\t\tOffloading cluster {} ({})'.format(label, bins_idx.get(label, 0)))
+                    crt_bin_file_idx = bins_idx.get(label, 0)
+                    crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR, 'bin-{:04d}-{:04d}.bin'.format(label, crt_bin_file_idx))
+                    f = open(crt_bin_file_path, 'wb')
+                    pickle.dump(bins[label], f)
+                    #print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Dumped another {} examples (total: {})'.format(len(bins[label]), num_dumped_examples))
+                    num_dumped_examples += len(bins[label])
+                    f.close()
+                    bins_idx[label] = crt_bin_file_idx + 1
+                    del bins[label]
         
         # dump remaining bins (which do not exceed MAX_BIN_SIZE examples)
         print('Dumping remaining {} bins'.format(len(bins)))
         for idx_label, examples in bins.items():
-            ##print('\t\t\tOffloading remaining items from cluster {} ({})'.format(idx_label, bins_idx.get(idx_label, 0)))
+            print('\t\t\tOffloading remaining items from cluster {} ({})'.format(idx_label, bins_idx.get(idx_label, 0)))
             crt_bin_file_idx = bins_idx.get(idx_label, 0)
             #########################################crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR, 'bin-{:04d}-{:04d}.bin'.format(label, crt_bin_file_idx)) # <- bug overwriting previous bin files (causing missing indices in the bin files numbering)
-            crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR, 'shard-{:04d}-bin-{:04d}-{:04d}.bin'.format(NUM_RUN, idx_label, crt_bin_file_idx))
+            crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR, 'bin-{:04d}-{:04d}.bin'.format(idx_label, crt_bin_file_idx))
             f = open(crt_bin_file_path, 'wb')
             pickle.dump(bins[idx_label], f)
             #print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Dumped another {} examples (total: {})'.format(len(bins[idx_label]), num_dumped_examples))
@@ -382,10 +376,7 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
         
         # reset the bins contents before moving to the next text record
         bins = dict()
-        if kmeans_X is not None:
-            processed_examples += kmeans_X.shape[0]
-        kmeans_X = None # <-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-        initialized_kmeans_X = False # <--------------------------
+        processed_examples += kmeans_X.shape[0]
 
         # remove remaining embedding files
         tmp_embds_files = os.listdir(TEMPORARY_EMBEDDINGS_DIR)
@@ -395,15 +386,13 @@ def create_tmp_embeddings(embedder, kmeans, previous_processed_examples):
             os.remove(full_tmp_emb_path)
         crt_tmp_emb_idx = 0
         initialized_x = False
-        
-        print('End of processing text record {}; Remaining bin size: {} | processed kmeans: {} | num loaded: {} | num embedded: {} | kmeans x: {} | num dumped examples: {}'.format(idx_record, len(bins), processed_examples, num_loaded_examples, num_embedded_examples, kmeans_x_examples, num_dumped_examples))
 
     print('Remaining bin size: {} | processed kmeans: {} | num loaded: {} | num embedded: {} | kmeans x: {} | num dumped examples: {}'.format(len(bins), processed_examples, num_loaded_examples, num_embedded_examples, kmeans_x_examples, num_dumped_examples))
 
     # dump final fit version of the kmeans obj, after processing all text records
-    crt_kmeans_obj_path = os.path.join(FITTED_MBKS_DIR, 'shard-{:04d}-final-fitted-mbk.bin'.format(NUM_RUN))
+    crt_kmeans_obj_path = os.path.join(FITTED_MBKS_DIR, 'final-fitted-mbk.bin')
     g = open(crt_kmeans_obj_path, 'wb')
-    pickle.dump((kmeans, processed_examples), g)
+    pickle.dump(kmeans, g)
     g.close()
 
 def assemble_full_emb_X():
@@ -575,39 +564,6 @@ def compressed_construct_bins():
     
     return bins
 
-def compressed_construct_bins_shards():
-    bins = dict()
-    num_examples = 0
-    
-    for bin_ in range(NUM_CLUSTERS):
-        crt_path = os.path.join(DATASET_DIR, 'bins-uncompressed', 'shard-*-bin-{:04d}*'.format(bin_))
-        crt_bin_files = glob.glob(crt_path)
-        crt_bin_files.sort()
-        print('crt_bin_files: {}'.format(crt_bin_files))
-        print('-----')
-        
-        crt_bin = []
-        for bin_file in crt_bin_files:
-            print('Opening file --- {}'.format(bin_file))
-            f = open(bin_file, 'rb')
-            try:
-                crt_bin_data = pickle.load(f)
-            except OSError as oserror:
-                print('Error was {}; attempting again in 5 seconds'.format(oserror))
-                time.sleep(5)
-                crt_bin_data = pickle.load(f)
-            f.close()
-            num_examples += len(crt_bin_data)
-            crt_bin += crt_bin_data
-        
-        print('Writing bin {}'.format(bin_))
-        with open(os.path.join(DATASET_DIR, 'bins-compressed/bin-{:04d}.bin'.format(bin_)), 'wb') as g:
-            pickle.dump(crt_bin, g)
-    
-    print('Loaded {} examples'.format(num_examples))
-
-    return bins
-
 def restore_compressed_bins():
     bins = dict()
     num_examples = 0
@@ -718,42 +674,7 @@ def get_text_data_full():
         print('Text record {:04d} contains sentences between indices (inclusive):\t{}'.format(id_, limits))
    
     return data_texts, sentence_idx_boundaries
-
-def get_text_data_full_shards():
-    all_text_dirs = os.listdir(os.path.join(DATASET_DIR, 'text-records/'))
-    all_text_dirs.sort()
     
-    sentence_idx_boundaries = dict()
-    data_texts = dict()
-    running_sentence_num = 0
-    crt_rec_idx = 0
-    
-    for text_dir in all_text_dirs:
-        print('Loading text records from directory {}'.format(text_dir))
-        crt_dir_path = os.path.join(DATASET_DIR, 'text-records/', text_dir)
-        
-        crt_files = os.listdir(crt_dir_path)
-        crt_files.sort()
-        
-        for idx_text_record, text_record in enumerate(crt_files):
-            print('\tLoading text record {}'.format(text_record))
-            full_text_record_path = os.path.join(crt_dir_path, text_record)
-            f_text = open(full_text_record_path, 'rb')
-            data_text = pickle.load(f_text)
-            data_texts[crt_rec_idx] = data_text
-            f_text.close()
-            
-            flattened_data = list(chain.from_iterable(data_text))
-            sentence_idx_boundaries[crt_rec_idx] = (running_sentence_num, running_sentence_num + len(flattened_data) - 1)
-            running_sentence_num += len(flattened_data)
-            crt_rec_idx += 1
-    
-    for id_, limits in sentence_idx_boundaries.items():
-        print('Text record {:04d} contains sentences between indices (inclusive):\t{}'.format(id_, limits))
-        
-    return data_texts, sentence_idx_boundaries
-            
-
 def get_text_data():
     f_text = open(os.path.join(DATASET_DIR, 'text-records/', '0000-record.rec'), 'rb')
     data_text = pickle.load(f_text)
@@ -762,33 +683,8 @@ def get_text_data():
     
     return data_text
 
-def get_run_index():
-    global NUM_RUN
-    
-    fitted_mbks_path = os.path.join(DATASET_DIR, 'fitted-mbks/shard-*-final-fitted-mbk.bin')
-    fitted_mbk_files = glob.glob(fitted_mbks_path)
-    fitted_mbk_files.sort()
-    fitted_mbk_files = list(map(lambda x : os.path.basename(x), fitted_mbk_files))
-    
-    print('Found these files: {}'.format(fitted_mbk_files))
-    
-    latest_mbk = fitted_mbk_files[-1]
-    print('Latest fitted mbk is this: {}'.format(latest_mbk))
-    NUM_RUN = int(latest_mbk[6:10]) + 1
-    print('Num RUN is {}'.format(NUM_RUN))
-    
-
 def train(embedder):
-    get_run_index()
-    
-    # restore latest kmeans obj per run
-    f = open(os.path.join(DATASET_DIR, 'fitted-mbks', 'shard-{:04d}-final-fitted-mbk.bin'.format(NUM_RUN - 1)), 'rb')
-    kmeans_obj, processed_examples = pickle.load(f)
-    f.close()
-    
-    print('Num processed examples was {}'.format(processed_examples))
-    
-    create_tmp_embeddings(embedder, kmeans_obj, processed_examples)
+    create_tmp_embeddings(embedder)
     #store_fitted_kmeans()
     #kmeans = restore_kmeans()
     #bins = compressed_construct_bins()
@@ -877,56 +773,6 @@ def inference_multiple_text_records(test_sentence, embedder, kmeans, bins=None, 
     sentences_to_return.sort(key=itemgetter(1), reverse=True)
     
     return sentences_to_return
-
-def inference_multiple_text_records_shards(test_sentence, embedder, kmeans, bins=None, ipca_transformer=None, cluster_beam_size=5, sentence_beam_size=5, verbose=True, include_original_id=False):
-    data_text_, sentence_idx_boundaries = get_text_data_full_shards()
-    start = time.time()
-    target_idx = retrieve_similar_sentences(test_sentence, embedder, kmeans, bins=bins, ipca_transformer=ipca_transformer, cluster_beam_size=cluster_beam_size, sentence_beam_size=sentence_beam_size)
-    end = time.time()
-    print('Sentence retrieval took {} seconds\n'.format(end - start))
-    original_ids = []
-    
-    sentences_to_return = []
-    for target_idx_, max_similarity_ in target_idx:
-        idx_ = 0
-        crt_scenario = 0
-        backup_target_idx_ = target_idx_
-        original_ids.append(backup_target_idx_)
-        
-        for id_, limits in sentence_idx_boundaries.items():
-            if target_idx_ >= limits[0] and target_idx_ <= limits[1]:
-                data_text = data_text_[id_]
-                target_idx_ -= limits[0]
-                break
-
-        while idx_ < target_idx_:
-            if idx_ + len(data_text[crt_scenario]) > target_idx_:
-                break
-            idx_ += len(data_text[crt_scenario])
-            crt_scenario += 1
-
-        #print('Idx_ = {} | crt_scenario = {}\n'.format(idx_, crt_scenario))
-
-        num_neighbours_to_display = 3
-        for i in range(-num_neighbours_to_display,
-                       num_neighbours_to_display + 1):
-            if target_idx_ - idx_ + i >= 0 and target_idx_ - idx_ + i < len(data_text[crt_scenario]):
-                if i == 0:
-                    if verbose:
-                        print('\t{} (original ID: {}) -> {} (similarity {})'.format(target_idx_ + i, backup_target_idx_, data_text[crt_scenario][target_idx_ - idx_ + i], max_similarity_))
-                    sentences_to_return.append((data_text[crt_scenario][target_idx_ - idx_ + i], max_similarity_))
-                else:
-                    if verbose:
-                        print('{} -> {}'.format(target_idx_ + i, data_text[crt_scenario][target_idx_ - idx_ + i]))
-        if verbose:
-            print('-----')
-    #for idx, example in enumerate(data_text[crt_scenario]):
-    #    print('{} -> {}'.format(idx_ + idx, example))
-    
-    
-    sentences_to_return.sort(key=itemgetter(1), reverse=True)
-    
-    return sentences_to_return if not include_original_id else (sentences_to_return, original_ids)
 
 def inference_selected_bins(test_sentence, embedder, kmeans, ipca_transformer, cluster_beam_size=5, sentence_beam_size=5):
     data_text = get_text_data()
@@ -1037,7 +883,6 @@ def main():
     
     #kmeans = restore_kmeans()
     #bins = compressed_construct_bins()
-    bins = compressed_construct_bins_shards()
     
     ################kmeans = restore_kmeans()  # <---- needs to be done
     ################bins = restore_compressed_bins() # <---- needs to be done
@@ -1072,13 +917,12 @@ def main():
     ##similar_sentences = inference('why do you want to work with us?', EMBEDDER, kmeans, bins=bins, ipca_transformer=None, cluster_beam_size=CLUSTER_BEAM_SIZE, sentence_beam_size=SENTENCE_BEAM_SIZE)
 
     
-    '''
     f = open(os.path.join(FITTED_MBKS_DIR, 'final-fitted-mbk.bin'), 'rb')
     kmeans = pickle.load(f)
     f.close()
     #bins = restore_compressed_bins()
     bins = None
-    
+    '''
     similar_sentences = inference_multiple_text_records('well i guess i could start the second day', EMBEDDER, kmeans, bins=bins, ipca_transformer=None, cluster_beam_size=CLUSTER_BEAM_SIZE, sentence_beam_size=SENTENCE_BEAM_SIZE)
     similar_sentences = inference_multiple_text_records('i am happy', EMBEDDER, kmeans, bins=bins, ipca_transformer=None, cluster_beam_size=CLUSTER_BEAM_SIZE, sentence_beam_size=SENTENCE_BEAM_SIZE)
     similar_sentences = inference_multiple_text_records('what are your responsabilities at the current workplace?', EMBEDDER, kmeans, bins=bins, ipca_transformer=None, cluster_beam_size=CLUSTER_BEAM_SIZE, sentence_beam_size=SENTENCE_BEAM_SIZE)
@@ -1087,25 +931,10 @@ def main():
     similar_sentences = inference_multiple_text_records('could you tell me more about your projects?', EMBEDDER, kmeans, bins=bins, ipca_transformer=None, cluster_beam_size=CLUSTER_BEAM_SIZE, sentence_beam_size=SENTENCE_BEAM_SIZE)
     similar_sentences = inference_multiple_text_records('no, but i will finish the university soon.', EMBEDDER, kmeans, bins=bins, ipca_transformer=None, cluster_beam_size=CLUSTER_BEAM_SIZE, sentence_beam_size=SENTENCE_BEAM_SIZE)
     '''
-    
-    
-    '''
-    get_run_index()
-    f = open(os.path.join(FITTED_MBKS_DIR, 'shard-{:04d}-final-fitted-mbk.bin'.format(NUM_RUN - 1)), 'rb')
-    kmeans, num_processed = pickle.load(f)
-    print('Processed {} examples'.format(num_processed))
-    f.close()
-    bins = None
-    
     start_main = time.time()
-    similar_sentences, original_ids = inference_multiple_text_records_shards('i arrived here pretty fast, by subway', EMBEDDER, kmeans, bins=bins, ipca_transformer=None, cluster_beam_size=CLUSTER_BEAM_SIZE, sentence_beam_size=SENTENCE_BEAM_SIZE, verbose=False, include_original_id=True)
+    similar_sentences = inference_multiple_text_records('what is your experience in the field of 3d printing?', EMBEDDER, kmeans, bins=bins, ipca_transformer=None, cluster_beam_size=4, sentence_beam_size=4)
     end_main = time.time()
     print('Retrieved {} examples in {} seconds'.format(CLUSTER_BEAM_SIZE * SENTENCE_BEAM_SIZE, end_main - start_main))
-    
-    print('Rank\tOriginal ID\t\tSimilarity\tSentence\n-----------------------------------------------------------------------------')
-    for sentence_rank, (similar_sentence, similarity) in enumerate(similar_sentences):
-        print('{:04d}\t{:09d}\t\t{:.4f}\t\t{}'.format(sentence_rank, original_ids[sentence_rank], similarity, similar_sentence))
-    '''
     
 
 if __name__ == '__main__':
