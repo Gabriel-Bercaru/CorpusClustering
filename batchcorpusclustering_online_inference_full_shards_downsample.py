@@ -19,6 +19,7 @@ import numpy as np
 from operator import itemgetter
 import os
 import pickle
+import _pickle as cPickle
 import random
 from random import randrange
 import requests
@@ -52,6 +53,7 @@ sns.set_theme()
 class SentenceTransformersEmbedder:
     def __init__(self, model_name, device_type='cuda'):
         self.device = 'cuda' if torch.cuda.is_available() and device_type == 'cuda' else 'cpu'
+        print('Self device is {}'.format(self.device))
         self.model = SentenceTransformer(model_name, device=self.device)
 
     def batch_encode(self, sentence_list):
@@ -67,8 +69,11 @@ DATASET_DIR = './DataSet-Full-Unique-Shards/'
 NUM_RUN = 1
 FITTED_MBKS_DIR = os.path.join(DATASET_DIR, 'fitted-mbks/')
 FITTED_MBKS_DIR_2K = os.path.join(DATASET_DIR, 'fitted-mbks-2k/')
+FITTED_MBKS_DIR_512 = os.path.join(DATASET_DIR, 'fitted-mbks-512/')
 DOWNSAMPLED_FITTED_MBKS_DIR = os.path.join(DATASET_DIR, 'downsampled-fitted-mbks/')
+DOWNSAMPLED_FITTED_MBKS_DIR_512 = os.path.join(DATASET_DIR, 'downsampled-fitted-mbks-512-32/')
 FITTED_IPCA_DIR = os.path.join(DATASET_DIR, 'fitted-ipca/')
+FITTED_IPCA_DIR_512 = os.path.join(DATASET_DIR, 'fitted-ipca-512/')
 DOWNSAMPLED_EMBEDDINGS_DIR = os.path.join(DATASET_DIR, 'downsampled-embeddings/')
 
 CLUSTER_BEAM_SIZE = 10 #@param [1, 2, 5, 10, 100] {"type":"raw"}
@@ -76,6 +81,7 @@ SENTENCE_BEAM_SIZE = 10 #@param [1, 2, 5, 10, 100] {"type": "raw"}
 
 NUM_CLUSTERS = 1024 #@param [1, 100, 200, 500, 1000, 1024] {"type": "raw"}
 NUM_CLUSTERS_2K = 2048
+NUM_CLUSTERS_512 = 512
 KMEANS_MAX_ITER = 3000000 #@param [100000, 500000, 1000000, 3000000, 5000000] {"type": "raw"}
 KMEANS_BATCH_SIZE = 2048 #@param [1024, 2048, 4096] {"type": "raw"}
 
@@ -671,6 +677,7 @@ def get_closest_k_cluster_batch(cluster_centers, v, k):
 
 def top_k_closest_examples_batch(bins, cluster_idx, v, k):
     zipped_list = list(zip(*bins[cluster_idx]))
+    ##zipped_list = list(zip(*bins[cluster_idx][0][1]))
     embeddings_only = np.array(zipped_list[0])
     cosine_similarities = cosine_similarity(embeddings_only, v.reshape(1, -1)).squeeze()
 
@@ -695,26 +702,72 @@ def retrieve_similar_sentences(inference_sentence, embedder, kmeans_obj, bins=No
     closest_cluster_idx.sort()
     closest_sentence_idx_ = []
     
+    branched_bins = dict()
+    
     if bins is None:
         bins = dict()
         for closest_cluster_idx_ in closest_cluster_idx:
-            if verbose:
-                print('Loading cluster {}'.format(closest_cluster_idx_))
-            bins_path = None
-            if ipca_transformer is not None:
-                bins_path = os.path.join(DATASET_DIR, 'downsampled-bins-compressed-{}/'.format(IPCA_DIMENSIONS), 'bin-{:04d}.bin'.format(closest_cluster_idx_))
+            ##if verbose:
+            ##    print('Loading cluster {}'.format(closest_cluster_idx_))
+            ##bins_path = None
+            ##if ipca_transformer is not None:
+            ##    #bins_path = os.path.join(DATASET_DIR, 'downsampled-bins-compressed-{}-{}/'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS), 'bin-{:04d}.bin'.format(closest_cluster_idx_)) ##############################################
+            ##    bins_path = os.path.join(DATASET_DIR, 'downsampled-bins-compressed-{}/'.format(IPCA_DIMENSIONS), 'bin-{:04d}.bin'.format(closest_cluster_idx_))
+            ##else:
+            ##    bins_path = os.path.join(DATASET_DIR, 'bins-compressed/', 'bin-{:04d}.bin'.format(closest_cluster_idx_)) ###################################################################### 2k
+            ##f = open(bins_path, 'rb')
+            
+            
+            aux_kmeans_obj = None
+            print('Accessing elements of cluster {:04d}'.format(closest_cluster_idx_))
+            if os.path.isdir(os.path.join(DATASET_DIR, 'bins-compressed/', 'bin-{:04d}'.format(closest_cluster_idx_))):
+                with open(os.path.join(DATASET_DIR, 'bins-compressed/', 'bin-{:04d}'.format(closest_cluster_idx_), 'kmeans-obj.bin'), 'rb') as f2:
+                    aux_kmeans_obj = cPickle.load(f2)
+                    
+                closest_cluster_idx__ = get_closest_k_cluster_batch(aux_kmeans_obj.cluster_centers_, crt_embedding, 1)#cluster_beam_size)
+                closest_cluster_idx__.sort()
+                
+                for closest_cluster_idx___ in closest_cluster_idx__:
+                    if verbose:
+                        print('\tLoading subcluster {:04d} of cluster {:04d}'.format(closest_cluster_idx___, closest_cluster_idx_))
+                    bins_path_ = os.path.join(DATASET_DIR, 'bins-compressed', 'bin-{:04d}'.format(closest_cluster_idx_), 'bin-{:04d}.bin'.format(closest_cluster_idx___))
+                    
+                    f3 = open(bins_path_, 'rb')
+                    examples_ = cPickle.load(f3)
+                    f3.close()
+                
+                    branched_bins[closest_cluster_idx_] = examples_
             else:
-                bins_path = os.path.join(DATASET_DIR, 'bins-compressed-2048/', 'bin-{:04d}.bin'.format(closest_cluster_idx_))
-            f = open(bins_path, 'rb')
-            examples = pickle.load(f)
-            f.close()
-            bins[closest_cluster_idx_] = examples
+                aux_kmeans_obj = kmeans_obj
+                with open(os.path.join(DATASET_DIR, 'bins-compressed/', 'bin-{:04d}.bin'.format(closest_cluster_idx_)), 'rb') as f2:
+                    examples_ = cPickle.load(f2)
+                    branched_bins[closest_cluster_idx_] = examples_
+            
+            
+            
+            ##examples = cPickle.load(f)
+            ##f.close()
+            ##bins[closest_cluster_idx_] = examples
     
     for closest_cluster_idx_ in closest_cluster_idx:
         if verbose:
             print('-----> Attempting to access elements of cluster {}'.format(closest_cluster_idx_))
+        zipped_list = list(zip(*branched_bins[closest_cluster_idx_]))
+        #print('Len(zipped_list) = {}'.format(len(zipped_list[0])))
+        if len(zipped_list) < 1:
+            continue
+        closest_sentence_idx, max_similarity = top_k_closest_examples_batch(branched_bins, closest_cluster_idx_, crt_embedding, sentence_beam_size)
+        for closest_sentence_idx__, max_similarity_ in zip(closest_sentence_idx, max_similarity):
+            if verbose:
+                print('Closest vector to sencentes \'{}\' in cluster {} has index {} and similarity {}'.format(inference_sentence, closest_cluster_idx_, closest_sentence_idx__, max_similarity_))
+            closest_sentence_idx_.append((closest_sentence_idx__, max_similarity_))
+    
+    '''
+    for closest_cluster_idx_ in closest_cluster_idx:
+        if verbose:
+            print('-----> Attempting to access elements of cluster {}'.format(closest_cluster_idx_))
         zipped_list = list(zip(*bins[closest_cluster_idx_]))
-        print('Len(zipped_list) = {}'.format(len(zipped_list[0])))
+        #print('Len(zipped_list) = {}'.format(len(zipped_list[0])))
         if len(zipped_list) < 1:
             continue
         closest_sentence_idx, max_similarity = top_k_closest_examples_batch(bins, closest_cluster_idx_, crt_embedding, sentence_beam_size)
@@ -722,6 +775,7 @@ def retrieve_similar_sentences(inference_sentence, embedder, kmeans_obj, bins=No
             if verbose:
                 print('Closest vector to sencentes \'{}\' in cluster {} has index {} and similarity {}'.format(inference_sentence, closest_cluster_idx_, closest_sentence_idx__, max_similarity_))
             closest_sentence_idx_.append((closest_sentence_idx__, max_similarity_))
+    '''
     return closest_sentence_idx_
 
 def get_text_data_full():
@@ -1057,19 +1111,20 @@ def cluster_nlu_instances(kmeans_obj, bins):
             print('\t- {}'.format(retrieved_sentence))
         print('-----------------------------------')
 
-def fit_ipca_transformer():
+def fit_ipca_transformer(num_bins):
     '''
         Produces files inside DATASET_DIR -> 'fitted-ipca/'
     '''
     start_fit_ipca = time.time()
-    all_bins = os.listdir(os.path.join(DATASET_DIR, 'bins-compressed'))
+    all_bins = os.listdir(os.path.join(DATASET_DIR, 'bins-compressed-{}'.format(num_bins))) ############################################################## bins-compressed
     all_bins.sort()
     
     loaded_examples = 0
     fitted_examples = 0
     
-    MAX_IPCA_FIT_SIZE = 1e5
+    MAX_IPCA_FIT_SIZE = 1e6
     BIN_REPORT_FREQ = 1
+    EMBEDDINGS_BATCH_SIZE = 100000
     
     ipca_transformer = IncrementalPCA(n_components=IPCA_DIMENSIONS, batch_size=200)
     initialized_ipca_X = False
@@ -1079,7 +1134,7 @@ def fit_ipca_transformer():
         if idx_bin % BIN_REPORT_FREQ == 0:
             print('Processing items of bin {:04d} ({}) - [{}/{}] - {:.2f}%'.format(idx_bin, bin_file, idx_bin, len(all_bins), 100. * idx_bin / len(all_bins)))
     
-        crt_bin_path = os.path.join(DATASET_DIR, 'bins-compressed', bin_file)
+        crt_bin_path = os.path.join(DATASET_DIR, 'bins-compressed-{}'.format(num_bins), bin_file) #############################################################33 bins-compressed
         
         f = open(crt_bin_path, 'rb')
         crt_data = pickle.load(f)
@@ -1088,6 +1143,39 @@ def fit_ipca_transformer():
         embeddings_only = np.array(zipped_list[0])
         loaded_examples += len(embeddings_only)
         
+        for i in range(0, len(embeddings_only), EMBEDDINGS_BATCH_SIZE):
+            crt_embeddings_batch = embeddings_only[i : i + EMBEDDINGS_BATCH_SIZE, :]
+            
+            if not initialized_ipca_X:
+                ipca_X = np.reshape(crt_embeddings_batch, (len(crt_embeddings_batch), crt_embeddings_batch[0].shape[0]))
+                initialized_ipca_X = True
+            else:
+                ipca_X = np.vstack((ipca_X, np.reshape(crt_embeddings_batch, (len(crt_embeddings_batch), crt_embeddings_batch[0].shape[0]))))
+            
+            if ipca_X.shape[0] > MAX_IPCA_FIT_SIZE:
+                start_ipca = time.time()
+                ipca_transformer = ipca_transformer.partial_fit(ipca_X)
+                end_ipca = time.time()
+                fitted_examples += ipca_X.shape[0]
+                print('\tFitted IPCA transformer with {} examples in {} seconds'.format(ipca_X.shape[0], (end_ipca - start_ipca)))
+                ipca_X = None
+                initialized_ipca_X = False
+                
+        if ipca_X is not None and ipca_X.shape[0] >= IPCA_DIMENSIONS:
+            print('\tFitting IPCA_X transformer with remaining {} examples'.format(ipca_X.shape))
+            start_ipca = time.time()
+            ipca_transformer = ipca_transformer.partial_fit(ipca_X);
+            end_ipca = time.time()
+            fitted_examples += ipca_X.shape[0]
+            print('\tFitted IPCA transformer with remaining {} examples in {} seconds'.format(ipca_X.shape[0], (end_ipca - start_ipca)))
+            ipca_X = None
+            initialized_ipca_X = False
+        elif ipca_X is not None and ipca_X.shape[0] < IPCA_DIMENSIONS:
+            print('Skipping IPCA fitting due to too few examples')
+            ipca_X = None
+            initialized_ipca_X = False
+        
+        '''
         if not initialized_ipca_X:
             ipca_X = np.reshape(embeddings_only, (len(embeddings_only), embeddings_only[0].shape[0]))
             initialized_ipca_X = True
@@ -1102,6 +1190,7 @@ def fit_ipca_transformer():
             print('\tFitted IPCA transformer with {} examples in {} seconds'.format(ipca_X.shape[0], (end_ipca - start_ipca)))
             ipca_X = None
             initialized_ipca_X = False
+        '''
         
     if ipca_X is not None:
         print('\tFitting IPCA_X transformer with remaining {} examples'.format(ipca_X.shape))
@@ -1114,19 +1203,19 @@ def fit_ipca_transformer():
         initialized_ipca_X = False
     
     print('Dumping IPCA transformer')
-    g = open(os.path.join(FITTED_IPCA_DIR, 'final-fitted-ipca-{}.bin'.format(IPCA_DIMENSIONS)), 'wb')
+    g = open(os.path.join(FITTED_IPCA_DIR, 'final-fitted-ipca-{}-{}.bin'.format(num_bins, IPCA_DIMENSIONS)), 'wb')
     pickle.dump(ipca_transformer, g)
     g.close()
     end_fit_ipca = time.time()
     
     print('Num examples loaded: {} | Num examples fitted: {} | Total time: {} seconds | IPCA transformer explained variance: {}'.format(loaded_examples, fitted_examples, end_fit_ipca - start_fit_ipca, ipca_transformer.explained_variance_))
 
-def downsample_embedding_vectors():
+def downsample_embedding_vectors(num_bins):
     '''
         Produces files inside DATASET_DIR -> 'downsampled-embeddings/'
     '''
     start_ipca_transform = time.time()
-    all_bins = os.listdir(os.path.join(DATASET_DIR, 'bins-compressed'))
+    all_bins = os.listdir(os.path.join(DATASET_DIR, 'bins-compressed-{}'.format(num_bins)))
     all_bins.sort()
     
     loaded_examples = 0
@@ -1135,7 +1224,8 @@ def downsample_embedding_vectors():
     MAX_IPCA_FIT_SIZE = 1e5
     BIN_REPORT_FREQ = 1
     
-    ipca_transformer = pickle.load(open(os.path.join(FITTED_IPCA_DIR, 'final-fitted-ipca.bin'), 'rb'))
+    ##ipca_transformer = pickle.load(open(os.path.join(FITTED_IPCA_DIR, 'final-fitted-ipca.bin'), 'rb'))
+    ipca_transformer = pickle.load(open(os.path.join(DATASET_DIR, 'fitted-ipca-{}'.format(num_bins), 'final-fitted-ipca-{}-{}.bin'.format(num_bins, IPCA_DIMENSIONS)), 'rb'))
     initialized_ipca_X = False
     ipca_X = None
     all_indices = None
@@ -1144,7 +1234,7 @@ def downsample_embedding_vectors():
         if idx_bin % BIN_REPORT_FREQ == 0:
             print('Processing items of bin {:04d} ({}) - [{}/{}] - {:.2f}%'.format(idx_bin, bin_file, idx_bin, len(all_bins), 100. * idx_bin / len(all_bins)))
     
-        crt_bin_path = os.path.join(DATASET_DIR, 'bins-compressed', bin_file)
+        crt_bin_path = os.path.join(DATASET_DIR, 'bins-compressed-{}'.format(num_bins), bin_file)
         
         # load embeddings and indices
         f = open(crt_bin_path, 'rb')
@@ -1189,7 +1279,7 @@ def downsample_embedding_vectors():
     end_ipca_transform = time.time()
     print('Num examples loaded: {} | Num examples fitted: {} | Total time: {} seconds'.format(loaded_examples, fitted_examples, end_ipca_transform - start_ipca_transform))
 
-def fit_downsampled_embedding_vectors():
+def fit_downsampled_embedding_vectors(num_bins):
     '''
         Produces files inside DATASET_DIR -> 'downsampled-fitted-mbks/'
     '''
@@ -1202,7 +1292,7 @@ def fit_downsampled_embedding_vectors():
 
     BIN_REPORT_FREQ = 1
     
-    kmeans = MiniBatchKMeans(n_clusters=NUM_CLUSTERS, random_state=0, max_iter=KMEANS_MAX_ITER, batch_size=KMEANS_BATCH_SIZE)
+    kmeans = MiniBatchKMeans(n_clusters=num_bins, random_state=0, max_iter=KMEANS_MAX_ITER, batch_size=KMEANS_BATCH_SIZE)
     initialized_kmeans_X = False
     kmeans_X = None
     
@@ -1247,13 +1337,14 @@ def fit_downsampled_embedding_vectors():
         kmeans_X = None
         initialized_kmeans_X = False
         
-    with open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk-{}.bin'.format(IPCA_DIMENSIONS)), 'wb') as g:
+    ##with open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk-{}.bin'.format(IPCA_DIMENSIONS)), 'wb') as g:
+    with open(os.path.join(DATASET_DIR, 'downsampled-fitted-mbks-{}-{}'.format(num_bins, IPCA_DIMENSIONS), 'final-downsampled-fitted-mbk-{}-{}.bin'.format(num_bins, IPCA_DIMENSIONS)), 'wb') as g:
         pickle.dump(kmeans, g)
     end_kmeans_time = time.time()
     
     print('Num examples loaded: {} | Num example processed: {} | Kmeans fitting time: {}'.format(loaded_examples, processed_examples, end_kmeans_time - start_kmeans_time))
 
-def cluster_downsampled_embeddings():
+def cluster_downsampled_embeddings(num_bins):
     '''
         Produces files inside DATASET_DIR -> 'downsampled-bins-uncompressed/'
     '''
@@ -1266,8 +1357,10 @@ def cluster_downsampled_embeddings():
     num_dumped_examples = 0
     
     BIN_REPORT_FREQ = 1
+    THIS_DOWNSAMPLED_FITTED_MBKS_DIR = os.path.join(DATASET_DIR, 'downsampled-fitted-mbks-{}-{}'.format(num_bins, IPCA_DIMENSIONS), 'final-downsampled-fitted-mbk-{}-{}.bin'.format(num_bins, IPCA_DIMENSIONS))
     
-    kmeans = pickle.load(open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk.bin'), 'rb'))
+    ##kmeans = pickle.load(open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk.bin'), 'rb'))
+    kmeans = pickle.load(open(THIS_DOWNSAMPLED_FITTED_MBKS_DIR, 'rb'))
     bins = dict()
     bins_idx = dict()
     DOWNSAMPLED_UNCOMPRESSED_BINS_DIR = os.path.join(DATASET_DIR, 'downsampled-bins-uncompressed/')
@@ -1328,7 +1421,7 @@ def cluster_downsampled_embeddings():
     
     print('Num examples loaded: {} | Num examples processed: {} | Num dumped examples: {} | Total time: {}'.format(loaded_examples, processed_examples, num_dumped_examples, end_clustering_time - start_clustering_time))
 
-def construct_downsampled_compressed_bins():
+def construct_downsampled_compressed_bins(num_bins):
     '''
         Produces files inside DATASET_DIR -> 'downsampled-bins-compressed/'
     '''
@@ -1339,10 +1432,10 @@ def construct_downsampled_compressed_bins():
     num_examples = 0
     bins = dict()
     
-    DOWNSAMPLED_COMPRESSED_BINS_DIR = os.path.join(DATASET_DIR, 'downsampled-bins-compressed-{}/'.format(IPCA_DIMENSIONS))
+    DOWNSAMPLED_COMPRESSED_BINS_DIR = os.path.join(DATASET_DIR, 'downsampled-bins-compressed-{}-{}/'.format(num_bins, IPCA_DIMENSIONS))
     DOWNSAMPLED_UNCOMPRESSED_BINS_DIR = os.path.join(DATASET_DIR, 'downsampled-bins-uncompressed/')
     
-    for bin_ in range(NUM_CLUSTERS):
+    for bin_ in range(num_bins):
         crt_path = os.path.join(DOWNSAMPLED_UNCOMPRESSED_BINS_DIR, 'downsampled-bin-{:04d}*'.format(bin_))
         print('Looking for files matching \'{}\''.format(crt_path))
         crt_bin_files = glob.glob(crt_path)
@@ -1413,7 +1506,7 @@ def get_text_data_boundaries_shards():
     
     
     with open(os.path.join(DATASET_DIR, 'text-records-boundaries/', 'opensubtitles-records-boundaries.bin'), 'rb') as f:
-        sentence_idx_boundaries, idx2file = pickle.load(f)
+        sentence_idx_boundaries, idx2file = cPickle.load(f)
     
     
     #for id_, limits in sentence_idx_boundaries.items():
@@ -1437,7 +1530,7 @@ def inference_multiple_text_records_shards_downsampled(test_sentence, embedder, 
     prev_limit_l = sentence_idx_boundaries[data_text_id][0]
     prev_limit_r = sentence_idx_boundaries[data_text_id][1]
     with open(idx2file[(prev_limit_l, prev_limit_r)], 'rb') as f:
-        data_text = pickle.load(f)
+        data_text = cPickle.load(f)
     
     #for x in target_idx:
     #    print('\tX: {}'.format(x))
@@ -1471,7 +1564,7 @@ def inference_multiple_text_records_shards_downsampled(test_sentence, embedder, 
             if verbose:
                 print('Now loading text record {}'.format(idx2file[(prev_limit_l, prev_limit_r)]))
             with open(idx2file[(prev_limit_l, prev_limit_r)], 'rb') as f:
-                data_text = pickle.load(f)
+                data_text = cPickle.load(f)
                 
             target_idx_ -= prev_limit_l
 
@@ -1483,6 +1576,10 @@ def inference_multiple_text_records_shards_downsampled(test_sentence, embedder, 
 
         #print('Idx_ = {} | crt_scenario = {}\n'.format(idx_, crt_scenario))
 
+        if target_idx_ - idx_ >= 0 and target_idx_ - idx_ < len(data_text[crt_scenario]):
+            sentences_to_return.append((data_text[crt_scenario][target_idx_ - idx_], max_similarity_))
+
+        '''
         num_neighbours_to_display = 3
         for i in range(-num_neighbours_to_display,
                        num_neighbours_to_display + 1):
@@ -1496,6 +1593,7 @@ def inference_multiple_text_records_shards_downsampled(test_sentence, embedder, 
                         print('{} -> {}'.format(target_idx_ + i, data_text[crt_scenario][target_idx_ - idx_ + i]))
         if verbose:
             print('-----')
+        '''
     #for idx, example in enumerate(data_text[crt_scenario]):
     #    print('{} -> {}'.format(idx_ + idx, example))
     
@@ -1562,6 +1660,7 @@ def cluster_nlu_instances_multiple_text_records_shards_downsampled(kmeans_obj, i
 def evaluate_banking77(chosen_dataset, dataset_type):
     total_retrieval_time_start = time.time()
     train_data = load_data('{}_{}.yaml'.format(chosen_dataset, dataset_type))
+    
 
     train_set = dict()
 
@@ -1579,13 +1678,24 @@ def evaluate_banking77(chosen_dataset, dataset_type):
     
     
     
+    '''
     ##with open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk-{}.bin'.format(IPCA_DIMENSIONS)), 'rb') as f:
     ##    kmeans = pickle.load(f)
-    with open(os.path.join(FITTED_MBKS_DIR_2K, 'final-fitted-mbk-2k.bin'), 'rb') as f:
+    with open(os.path.join(FITTED_MBKS_DIR_512, 'final-fitted-mbk-512.bin'), 'rb') as f: ################################################################### 2K
         kmeans, _ = pickle.load(f)
     ##ipca_transformer = pickle.load(open(os.path.join(FITTED_IPCA_DIR, 'final-fitted-ipca-{}.bin'.format(IPCA_DIMENSIONS)), 'rb'))
     ipca_transformer = None
     bins = None
+    '''
+    
+    THIS_DOWNSAMPLED_FITTED_MBKS_DIR = os.path.join(DATASET_DIR, 'downsampled-fitted-mbks-{}-{}'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS), 'final-downsampled-fitted-mbk-{}-{}.bin'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS))
+    kmeans, num_processed_examples = pickle.load(open(THIS_DOWNSAMPLED_FITTED_MBKS_DIR, 'rb')), 0
+    ##kmeans = pickle.load(open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk.bin'), 'rb'))
+    #with open(os.path.join(FITTED_MBKS_DIR_512, 'final-fitted-mbk-512.bin'), 'rb') as f:
+    #    kmeans, num_processed_examples = pickle.load(f)
+    ipca_transformer = pickle.load(open(os.path.join(FITTED_IPCA_DIR_512, 'final-fitted-ipca-{}-{}.bin'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS)), 'rb'))
+    bins = None
+    
     
     additional_examples = dict()
     total_intents = len(train_set)
@@ -1601,7 +1711,7 @@ def evaluate_banking77(chosen_dataset, dataset_type):
             time_a = time.time()
             similar_sentences, original_ids = inference_multiple_text_records_shards_downsampled(example, EMBEDDER, kmeans, bins=bins, ipca_transformer=ipca_transformer, cluster_beam_size=1, sentence_beam_size=1, verbose=False, include_original_id=True)
             time_b = time.time()
-            print('{} sentences retrieval time: {}'.format(len(similar_sentences), time_b - time_a))
+            #print('{} sentences retrieval time: {}'.format(len(similar_sentences), time_b - time_a))
             for sentence_rank, (similar_sentence, similarity) in enumerate(similar_sentences):
                 if not k in additional_examples:
                     additional_examples[k] = [similar_sentence]
@@ -1609,7 +1719,7 @@ def evaluate_banking77(chosen_dataset, dataset_type):
                     additional_examples[k].append(similar_sentence)
     total_retrieval_time_end = time.time()
     
-    with open('{}-{}-additional-examples-2048.bin'.format(chosen_dataset, dataset_type), 'wb') as g:
+    with open('{}-{}-additional-examples-512-32-26-11-2022.bin'.format(chosen_dataset, dataset_type), 'wb') as g: ############################################################## 2K
         pickle.dump(additional_examples, g)
         
     num_retrieved_examples = 0
@@ -1636,14 +1746,30 @@ def evaluate_clinc150(chosen_dataset, dataset_type):
         total_examples += len(v)
     print('Total examples: {}'.format(total_examples))
     
+
     
     
-    with open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk-{}.bin'.format(IPCA_DIMENSIONS)), 'rb') as f:
-        kmeans = pickle.load(f)
+    '''
+    #with open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk-{}.bin'.format(IPCA_DIMENSIONS)), 'rb') as f:
+    #    kmeans = pickle.load(f)
+    with open(os.path.join(FITTED_MBKS_DIR_2K, 'final-fitted-mbk-2k.bin'), 'rb') as f:
+        kmeans, _ = pickle.load(f)
     ipca_transformer = pickle.load(open(os.path.join(FITTED_IPCA_DIR, 'final-fitted-ipca-{}.bin'.format(IPCA_DIMENSIONS)), 'rb'))
     ##ipca_transformer = None
     bins = None
+    '''
     
+    
+    THIS_DOWNSAMPLED_FITTED_MBKS_DIR = os.path.join(DATASET_DIR, 'downsampled-fitted-mbks-{}-{}'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS), 'final-downsampled-fitted-mbk-{}-{}.bin'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS))
+    kmeans, num_processed_examples = pickle.load(open(THIS_DOWNSAMPLED_FITTED_MBKS_DIR, 'rb')), 0
+    ##kmeans = pickle.load(open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk.bin'), 'rb'))
+    #with open(os.path.join(FITTED_MBKS_DIR_512, 'final-fitted-mbk-512.bin'), 'rb') as f:
+    #    kmeans, num_processed_examples = pickle.load(f)
+    ipca_transformer = pickle.load(open(os.path.join(FITTED_IPCA_DIR_512, 'final-fitted-ipca-{}-{}.bin'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS)), 'rb'))
+    bins = None
+    
+    
+    '''
     additional_examples = dict()
     total_intents = len(train_set)
     crt_intent = 0
@@ -1655,7 +1781,7 @@ def evaluate_clinc150(chosen_dataset, dataset_type):
         for idx_example, example in enumerate(v):
             if idx_example % EXAMPLE_REPORT_FREQ == 0:
                 print('\tProcessing example [{}/{}] [{:.2f}%]'.format(idx_example + 1, len(v), ((idx_example + 1) / len(v)) * 100.))
-            similar_sentences, original_ids = inference_multiple_text_records_shards_downsampled(example, EMBEDDER, kmeans, bins=bins, ipca_transformer=ipca_transformer, cluster_beam_size=1, sentence_beam_size=1, verbose=True, include_original_id=True)
+            similar_sentences, original_ids = inference_multiple_text_records_shards_downsampled(example, EMBEDDER, kmeans, bins=bins, ipca_transformer=ipca_transformer, cluster_beam_size=1, sentence_beam_size=1, verbose=False, include_original_id=True)
             for sentence_rank, (similar_sentence, similarity) in enumerate(similar_sentences):
                 if not k in additional_examples:
                     additional_examples[k] = [similar_sentence]
@@ -1663,7 +1789,7 @@ def evaluate_clinc150(chosen_dataset, dataset_type):
                     additional_examples[k].append(similar_sentence)
     total_retrieval_time_end = time.time()
     
-    with open('{}-{}-additional-examples.bin'.format(chosen_dataset, dataset_type), 'wb') as g:
+    with open('{}-{}-additional-examples-2k-04-10-2022.bin'.format(chosen_dataset, dataset_type), 'wb') as g:
         pickle.dump(additional_examples, g)
         
     num_retrieved_examples = 0
@@ -1671,7 +1797,39 @@ def evaluate_clinc150(chosen_dataset, dataset_type):
         num_retrieved_examples += len(v)
         
     print('Retrieved {} additional examples in {} seconds'.format(num_retrieved_examples, total_retrieval_time_end - total_retrieval_time_start))
+    '''
 
+
+    additional_examples = dict()
+    total_intents = len(train_set)
+    crt_intent = 0
+    
+    EXAMPLE_REPORT_FREQ = 10
+    for k, v in train_set.items():
+        crt_intent += 1
+        print('Processing intent {} [{}/{}] [{:.2f}%]'.format(k, crt_intent, total_intents, crt_intent / total_intents * 100.))
+        for idx_example, example in enumerate(v):
+            if idx_example % EXAMPLE_REPORT_FREQ == 0:
+                print('\tProcessing example [{}/{}] [{:.2f}%]'.format(idx_example + 1, len(v), ((idx_example + 1) / len(v)) * 100.))
+            time_a = time.time()
+            similar_sentences, original_ids = inference_multiple_text_records_shards_downsampled(example, EMBEDDER, kmeans, bins=bins, ipca_transformer=ipca_transformer, cluster_beam_size=1, sentence_beam_size=1, verbose=False, include_original_id=True)
+            time_b = time.time()
+            #print('{} sentences retrieval time: {}'.format(len(similar_sentences), time_b - time_a))
+            for sentence_rank, (similar_sentence, similarity) in enumerate(similar_sentences):
+                if not k in additional_examples:
+                    additional_examples[k] = [similar_sentence]
+                else:
+                    additional_examples[k].append(similar_sentence)
+    total_retrieval_time_end = time.time()
+    
+    with open('{}-{}-additional-examples-512-32-03-11-2022.bin'.format(chosen_dataset, dataset_type), 'wb') as g: ############################################################## 2K
+        pickle.dump(additional_examples, g)
+        
+    num_retrieved_examples = 0
+    for k, v in additional_examples.items():
+        num_retrieved_examples += len(v)
+        
+    print('Retrieved {} additional examples in {} seconds'.format(num_retrieved_examples, total_retrieval_time_end - total_retrieval_time_start))
 
 
 
@@ -1689,7 +1847,9 @@ def augment_banking77(chosen_dataset, dataset_type):
         else:
             train_set[x.data['intent']].append(x.data['text'])
             
-    with open('banking77-train-additional-examples-filtered-unique-09.bin', 'rb') as f:
+    ##with open('banking77-train-additional-examples-filtered-unique-09.bin', 'rb') as f:
+    ##with open('banking77-train-additional-examples-512-32-28-10-2022-unique-filtered-09.bin', 'rb') as f:
+    with open('{}-{}-additional-examples-512-32-07-11-2022-unique.bin'.format(chosen_dataset, dataset_type), 'rb') as f:
         data = pickle.load(f)
     num_additional_examples = 0
     for k, v in data.items():
@@ -1700,7 +1860,96 @@ def augment_banking77(chosen_dataset, dataset_type):
         #train_set[k] += v
         
     print('Retrieved {} additional examples'.format(num_additional_examples))
-    with open('banking77-train-augmented-filtered-09.yaml', 'w', encoding='UTF-8') as g:
+    with open('{}-{}-augmented-filtered-512-32-07-11-2022.yaml'.format(chosen_dataset, dataset_type), 'w', encoding='UTF-8') as g:
+        g.write('nlu:\n')
+        for k, v in train_set.items():
+            g.write('- intent: {}\n'.format(k))
+            g.write('  examples: |\n')
+            for vv in v:
+                g.write('    - {}\n'.format(vv))
+            g.write('\n')
+
+def augment_banking77_similar(chosen_dataset, dataset_type):
+    train_data = load_data('{}_{}.yaml'.format(chosen_dataset, dataset_type))
+    train_set = dict()
+    all_unique_words = dict()
+    
+    for x in train_data.nlu_examples:
+        if not x.data['intent'] in train_set:
+            train_set[x.data['intent']] = [x.data['text']]
+        else:
+            train_set[x.data['intent']].append(x.data['text'])
+    
+    for x in train_data.nlu_examples:
+        text_data_tokens = x.data['text'].split()
+        if not x.data['intent'] in all_unique_words:
+            all_unique_words[x.data['intent']] = set()
+        for token in text_data_tokens:
+            all_unique_words[x.data['intent']].add(token)
+    
+    with open('{}-{}-additional-examples-512-32-07-11-2022-unique.bin'.format(chosen_dataset, dataset_type), 'rb') as f:
+        data = pickle.load(f)
+    num_additional_examples = 0
+    for k, v in data.items():
+        for vv in v:
+            vv_tokens = set(vv.split(' '))
+            if len(all_unique_words[k].intersection(vv_tokens)) > 5:
+                train_set[k].append(vv)
+                num_additional_examples += 1
+    
+    print('Retrieved {} additional examples'.format(num_additional_examples))
+    with open('{}-{}-augmented-filtered-512-32-10-11-2022.yaml'.format(chosen_dataset, dataset_type), 'w', encoding='UTF-8') as g:
+        g.write('nlu:\n')
+        for k, v in train_set.items():
+            g.write('- intent: {}\n'.format(k))
+            g.write('  examples: |\n')
+            for vv in v:
+                g.write('    - {}\n'.format(vv))
+            g.write('\n')
+
+def augment_banking77_similar_stopwords(chosen_dataset, dataset_type):
+    train_data = load_data('{}_{}.yaml'.format(chosen_dataset, dataset_type))
+    train_set = dict()
+    all_unique_words = dict()
+    stop_words = set()
+    
+    # read initial training data
+    for x in train_data.nlu_examples:
+        if not x.data['intent'] in train_set:
+            train_set[x.data['intent']] = [x.data['text']]
+        else:
+            train_set[x.data['intent']].append(x.data['text'])
+            
+    # read stop words
+    with open('stopwords-english.txt', 'r', encoding='UTF-8') as f:
+        lines = f.readlines()
+    stop_words = set(map(lambda x : x.strip(), lines))
+    
+    # get initial training unique tokens
+    for x in train_data.nlu_examples:
+        text_data_tokens = x.data['text'].split()
+        if not x.data['intent'] in all_unique_words:
+            all_unique_words[x.data['intent']] = set()
+        for token in text_data_tokens:
+            if not token in stop_words:
+                all_unique_words[x.data['intent']].add(token)
+    
+    # read and add additional data
+    #with open('{}-{}-additional-examples-512-32-07-11-2022-unique.bin'.format(chosen_dataset, dataset_type), 'rb') as f:
+    with open('{}-{}-additional-examples-512-32-26-11-2022-unique.bin'.format(chosen_dataset, dataset_type), 'rb') as f:
+        data = cPickle.load(f)
+    num_additional_examples = 0
+    for k, v in data.items():
+        for vv in v:
+            vv_tokens = set(vv.split(' '))
+            vv_tokens_no_stopwords = vv_tokens.difference(stop_words)
+            if len(all_unique_words[k].intersection(vv_tokens_no_stopwords)) > 1:
+                train_set[k].append(vv)
+                num_additional_examples += 1
+              
+    # write resulting train data
+    print('Retrieved {} additional examples'.format(num_additional_examples))
+    with open('{}-{}-augmented-filtered-512-32-26-11-2022-stopwords.yaml'.format(chosen_dataset, dataset_type), 'w', encoding='UTF-8') as g:
         g.write('nlu:\n')
         for k, v in train_set.items():
             g.write('- intent: {}\n'.format(k))
@@ -1720,7 +1969,8 @@ def augment_clinc150(chosen_dataset, dataset_type):
         else:
             train_set[x.data['intent']].append(x.data['text'])
             
-    with open('{}-train-additional-examples-unique-filtered-09.bin'.format(chosen_dataset), 'rb') as f:
+    #with open('{}-train-additional-examples-unique-filtered-09.bin'.format(chosen_dataset), 'rb') as f:
+    with open('{}-train-additional-examples-512-32-03-11-2022-unique-filtered-09.bin'.format(chosen_dataset), 'rb') as f:
         data = pickle.load(f)
     num_additional_examples = 0
     for k, v in data.items():
@@ -1731,7 +1981,8 @@ def augment_clinc150(chosen_dataset, dataset_type):
         #train_set[k] += v
         
     print('Retrieved {} additional examples'.format(num_additional_examples))
-    with open('{}-train-augmented-filtered-09.yaml'.format(chosen_dataset), 'w', encoding='UTF-8') as g:
+    #with open('{}-train-augmented-filtered-09.yaml'.format(chosen_dataset), 'w', encoding='UTF-8') as g:
+    with open('{}-train-additional-examples-512-32-03-11-2022-final.yaml'.format(chosen_dataset), 'w', encoding='UTF-8') as g:
         g.write('nlu:\n')
         for k, v in train_set.items():
             g.write('- intent: {}\n'.format(k))
@@ -1901,6 +2152,234 @@ def compressed_construct_bins_2k():
     
     return bins
 
+
+
+
+def cluster_embeddings_512():
+    '''
+        Produces files inside DATASET_DIR -> 'bins-uncompressed-512/'
+    '''
+    start_clustering_time = time.time()
+    COMPRESSED_BINS_PATH = os.path.join(DATASET_DIR, 'bins-compressed/')
+    all_bins = os.listdir(COMPRESSED_BINS_PATH)
+    all_bins.sort()
+    
+    loaded_examples = 0
+    processed_examples = 0
+    num_dumped_examples = 0
+    kmeans_x_examples = 0
+    
+    BIN_REPORT_FREQ = 1
+    
+    #kmeans = pickle.load(open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk.bin'), 'rb'))
+    kmeans = MiniBatchKMeans(n_clusters=NUM_CLUSTERS_512, random_state=0, max_iter=KMEANS_MAX_ITER, batch_size=KMEANS_BATCH_SIZE)
+    bins = dict()
+    bins_idx = dict()
+    UNCOMPRESSED_BINS_DIR_512 = os.path.join(DATASET_DIR, 'bins-uncompressed-512/')
+    
+    for idx_bin, bin_file in enumerate(all_bins):
+        if idx_bin % BIN_REPORT_FREQ == 0:
+            print('Processing downsampled items of bin {:04d} ({}) - [{}/{}] - {:.2f}%'.format(idx_bin, bin_file, idx_bin, len(all_bins), 100. * idx_bin / len(all_bins)))
+            
+        # load embeddings and indices
+        f = open(os.path.join(COMPRESSED_BINS_PATH, bin_file), 'rb')
+        crt_data = pickle.load(f)
+        f.close()
+        zipped_list = list(zip(*crt_data))
+        embeddings_only = np.array(zipped_list[0])
+        indices_only = zipped_list[1]
+        loaded_examples += len(embeddings_only)
+        
+        
+        # cluster embeddings and pair them with the indices
+        kmeans_X = np.reshape(embeddings_only, (len(embeddings_only), embeddings_only[0].shape[0]))
+        print('\t\tStarted Kmeans partial fitting with {} examples'.format(kmeans_X.shape[0]))
+        start_kmeans = time.time()
+        kmeans = kmeans.partial_fit(kmeans_X)
+        kmeans_x_examples += kmeans_X.shape[0]
+        processed_examples += kmeans_X.shape[0]
+        end_kmeans = time.time()
+        all_indices = np.reshape(indices_only, (len(indices_only), ))
+        print('\t\tEnded Kmeans partial fitting in {} seconds'.format(end_kmeans - start_kmeans))
+        
+        print('Kmeans size: {}'.format(sys.getsizeof(kmeans)))
+        
+        # assign each example to its corresponding cluster
+        for idx_label, label in enumerate(kmeans.labels_):
+            if not label in bins:
+                bins[label] = [(kmeans_X[idx_label, :], all_indices[idx_label])]
+            else:
+                bins[label].append((kmeans_X[idx_label, :], all_indices[idx_label]))
+                if len(bins[label]) > MAX_BIN_SIZE:
+                    # offloading large clusters to separate file
+                    print('\t\t\tOffloading cluster {} ({})'.format(label, bins_idx.get(label, 0)))
+                    crt_bin_file_idx = bins_idx.get(label, 0)
+                    crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR_512, 'bin-{:04d}-{:04d}.bin'.format(label, crt_bin_file_idx))
+                    f = open(crt_bin_file_path, 'wb')
+                    pickle.dump(bins[label], f)
+                    num_dumped_examples += len(bins[label])
+                    #print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Dumped another {} examples (total: {})'.format(len(bins[label]), num_dumped_examples))
+                    f.close()
+                    bins_idx[label] = crt_bin_file_idx + 1
+                    del bins[label]
+        
+            #if idx_label % 10000 == 0:
+            #    print('idx = {}/{} | Size({}) = {}'.format(idx_label, len(kmeans.labels_), 'bins', sys.getsizeof(bins)))
+            #    print('idx = {}/{} | Size({}) = {}'.format(idx_label, len(kmeans.labels_), 'bins_idx', sys.getsizeof(bins_idx)))
+                
+        # dump remaining bins
+        print('Dumping remaining {} bins'.format(len(bins)))
+        for bin_label, elements in bins.items():
+            crt_bin_file_idx = bins_idx.get(bin_label, 0)
+            crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR_512, 'bin-{:04d}-{:04d}.bin'.format(bin_label, crt_bin_file_idx))
+            f = open(crt_bin_file_path, 'wb')
+            pickle.dump(bins[bin_label], f)
+            num_dumped_examples += len(bins[bin_label])
+            f.close()
+            bins_idx[bin_label] = crt_bin_file_idx + 1
+            #del bins[bin_label]
+        
+        bins = dict()
+        
+        kmeans_X = None
+        del kmeans_X
+        del embeddings_only
+        del zipped_list
+        del indices_only
+        gc.collect()
+         
+    '''
+    # dump remaining bins
+    print('Dumping remaining {} bins'.format(len(bins)))
+    for bin_label, elements in bins.items():
+        crt_bin_file_idx = bins_idx.get(bin_label, 0)
+        crt_bin_file_path = os.path.join(UNCOMPRESSED_BINS_DIR_2K, 'bin-{:04d}-{:04d}.bin'.format(bin_label, crt_bin_file_idx))
+        f = open(crt_bin_file_path, 'wb')
+        pickle.dump(bins[bin_label], f)
+        num_dumped_examples += len(bins[bin_label])
+        f.close()
+        bins_idx[bin_label] = crt_bin_file_idx + 1
+        #del bins[bin_label]
+    '''
+    
+    end_clustering_time = time.time()
+    
+    print('Num examples loaded: {} | Num examples processed: {} | Num dumped examples: {} | Total time: {}'.format(loaded_examples, processed_examples, num_dumped_examples, end_clustering_time - start_clustering_time))
+    
+    # dump final fit version of the kmeans obj, after processing all text records
+    FITTED_MBKS_DIR_512 = os.path.join(DATASET_DIR, 'fitted-mbks-512/')
+    crt_kmeans_obj_path = os.path.join(FITTED_MBKS_DIR_512, 'final-fitted-mbk-512.bin')
+    g = open(crt_kmeans_obj_path, 'wb')
+    pickle.dump((kmeans, processed_examples), g)
+    g.close()
+
+def compressed_construct_bins_512():
+    bins = dict()
+    num_examples = 0
+    
+    for bin_ in range(NUM_CLUSTERS_512):
+        crt_path = os.path.join(DATASET_DIR, 'bins-uncompressed-512/bin-{:04d}*'.format(bin_))
+        print('Looking for files matching \'{}\''.format(crt_path))
+        crt_bin_files = glob.glob(crt_path)
+        crt_bin_files.sort()
+        #print('crt_bin_files: {}'.format(crt_bin_files))
+        #print('-----')
+        #bins[bin_] = []
+        crt_bin = []
+        for bin_file in crt_bin_files:
+            #print('Opening file --- {}'.format(bin_file))
+            f = open(bin_file, 'rb')
+            try:
+                crt_bin_data = pickle.load(f)
+            except OSError as oserror:
+                print('Error was {}; attempting again in 5 seconds'.format(oserror))
+                time.sleep(5)
+                crt_bin_data = pickle.load(f)
+            f.close()
+            num_examples += len(crt_bin_data)
+            #bins[bin_] += crt_bin_data
+            crt_bin += crt_bin_data
+        
+        print('Writing bin {}'.format(bin_))
+        with open(os.path.join(DATASET_DIR, 'bins-compressed-512/bin-{:04d}.bin'.format(bin_)), 'wb') as g:
+            pickle.dump(crt_bin, g)
+        
+    print('Loaded {} examples'.format(num_examples))
+    
+    #for bin_label, bin_examples in bins.items():
+    #    print('Writing bin {}'.format(bin_label))
+    #    with open(os.path.join(DATASET_DIR, 'bins-compressed/bin-{:04d}.bin'.format(bin_label)), 'wb') as g:
+    #        pickle.dump(bin_examples, g)
+    
+    return bins
+
+
+def branch_clusters(clusters_dir):
+    files = os.listdir(clusters_dir)
+    files.sort()
+    
+    max_size = -1
+    max_file = None
+    report_freq = 1
+    MAX_SIZE = 100000
+    
+    '''
+    for idx_file, file in enumerate(files):
+        if idx_file % report_freq == 0:
+            print('Processing bin {}/{} [{:.2f}%]'.format(idx_file, len(files), idx_file / len(files) * 100.))
+        full_path = os.path.join(clusters_dir, file)
+        with open(full_path, 'rb') as f:
+            data = cPickle.load(f)
+        
+        if len(data) > max_size:
+            max_size = len(data)
+            max_file = file
+    
+    print('File: {} | size: {}'.format(os.path.join(clusters_dir, max_file), max_size))
+    '''
+    loaded_examples = 0
+    
+    for idx_file, file in enumerate(files):
+        if idx_file % report_freq == 0:
+            print('Processing bin {}/{} [{:.2f}%]'.format(idx_file, len(files), idx_file / len(files) * 100.))
+        full_path = os.path.join(clusters_dir, file)
+        with open(full_path, 'rb') as f:
+            data = cPickle.load(f)
+        
+        if len(data) > MAX_SIZE:
+            print('\tBin {} is larger than threshold ({} vs {})'.format(file, len(data), MAX_SIZE))
+            crt_bin_dir_path = os.path.join(clusters_dir, file.split('.')[0])
+            os.mkdir(crt_bin_dir_path)
+            crt_kmeans_obj = MiniBatchKMeans(n_clusters=1024, random_state=0, max_iter=KMEANS_MAX_ITER / 10, batch_size=KMEANS_BATCH_SIZE)
+            
+            # load embeddings and indices
+            zipped_list = list(zip(*data))
+            embeddings_only = np.array(zipped_list[0])
+            indices_only = zipped_list[1]
+            loaded_examples += len(embeddings_only)
+        
+            kmeans_X = np.reshape(embeddings_only, (len(embeddings_only), embeddings_only[0].shape[0]))
+            print('\t\tStarted Kmeans partial fitting with {} examples'.format(kmeans_X.shape[0]))
+            start_kmeans = time.time()
+            crt_kmeans_obj = crt_kmeans_obj.partial_fit(kmeans_X)
+            end_kmeans = time.time()
+            all_indices = np.reshape(indices_only, (len(indices_only), ))
+            
+            crt_bins = dict()
+            for idx_label, label in enumerate(crt_kmeans_obj.labels_):
+                if not label in crt_bins:
+                    crt_bins[label] = [(kmeans_X[idx_label], indices_only[idx_label])]
+                else:
+                    crt_bins[label].append((kmeans_X[idx_label], indices_only[idx_label]))
+                
+            for bin_, examples in crt_bins.items():
+                with open(os.path.join(crt_bin_dir_path, 'bin-{:04d}.bin'.format(bin_)), 'wb') as g:
+                    pickle.dump(examples, g, protocol=pickle.HIGHEST_PROTOCOL)
+            
+            with open(os.path.join(crt_bin_dir_path, 'kmeans-obj.bin'), 'wb') as g:
+                pickle.dump(crt_kmeans_obj, g, protocol=pickle.HIGHEST_PROTOCOL)
+            
+
 def main():
     #train(EMBEDDER)
     
@@ -1980,15 +2459,15 @@ def main():
     '''
     
     
-    #fit_ipca_transformer()
+    #fit_ipca_transformer(NUM_CLUSTERS_512)
     #print('-------------------------------------------------------------------------------------------------------------------------')
-    #downsample_embedding_vectors()
+    #downsample_embedding_vectors(NUM_CLUSTERS_512)
     #print('-------------------------------------------------------------------------------------------------------------------------')
-    #fit_downsampled_embedding_vectors()
+    #fit_downsampled_embedding_vectors(NUM_CLUSTERS_512)
     #print('-------------------------------------------------------------------------------------------------------------------------')
-    #cluster_downsampled_embeddings()
+    #cluster_downsampled_embeddings(NUM_CLUSTERS_512)
     #print('-------------------------------------------------------------------------------------------------------------------------')
-    #construct_downsampled_compressed_bins()
+    #construct_downsampled_compressed_bins(NUM_CLUSTERS_512)
     #print('-------------------------------------------------------------------------------------------------------------------------')
     
     
@@ -1998,36 +2477,54 @@ def main():
     ##ipca_transformer = None
     #bins = None
     
-    '''
-    with open(os.path.join(FITTED_MBKS_DIR_2K, 'final-fitted-mbk-2k.bin'), 'rb') as f:
-        kmeans, num_processed_examples = pickle.load(f)
+    ###THIS_DOWNSAMPLED_FITTED_MBKS_DIR = os.path.join(DATASET_DIR, 'downsampled-fitted-mbks-{}-{}'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS), 'final-downsampled-fitted-mbk-{}-{}.bin'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS))
+    ###kmeans, num_processed_examples = pickle.load(open(THIS_DOWNSAMPLED_FITTED_MBKS_DIR, 'rb')), 0
+    ##kmeans = pickle.load(open(os.path.join(DOWNSAMPLED_FITTED_MBKS_DIR, 'final-downsampled-fitted-mbk.bin'), 'rb'))
+    
+    
+    
+    
+    #with open(os.path.join(FITTED_MBKS_DIR_512, 'final-fitted-mbk-512.bin'), 'rb') as f:
+    #    kmeans, num_processed_examples = pickle.load(f)
+    #ipca_transformer = pickle.load(open(os.path.join(FITTED_IPCA_DIR_512, 'final-fitted-ipca-{}-{}.bin'.format(NUM_CLUSTERS_512, IPCA_DIMENSIONS)), 'rb'))
     ipca_transformer = None
+    with open(os.path.join(FITTED_MBKS_DIR, 'final-fitted-mbk.bin'), 'rb') as f:
+        kmeans, num_processed_examples = pickle.load(f)
     bins = None
     print('Num processed examples: {}'.format(num_processed_examples))
     
     
     start_main = time.time()
-    similar_sentences, original_ids = inference_multiple_text_records_shards_downsampled('could you tell me more about your projects?', EMBEDDER, kmeans, bins=bins, ipca_transformer=ipca_transformer, cluster_beam_size=10, sentence_beam_size=10, verbose=False, include_original_id=True)
+    similar_sentences, original_ids = inference_multiple_text_records_shards_downsampled('could you tell me more about your projects?', EMBEDDER, kmeans, bins=bins, ipca_transformer=ipca_transformer, cluster_beam_size=10, sentence_beam_size=7, verbose=False, include_original_id=True)
     end_main = time.time()
     print('Retrieved {} examples in {} seconds'.format(CLUSTER_BEAM_SIZE * SENTENCE_BEAM_SIZE, end_main - start_main))
     
     print('Rank\tOriginal ID\t\tSimilarity\tSentence\n-----------------------------------------------------------------------------')
     for sentence_rank, (similar_sentence, similarity) in enumerate(similar_sentences):
         print('{:04d}\t{:09d}\t\t{:.4f}\t\t{}'.format(sentence_rank, original_ids[sentence_rank], similarity, similar_sentence))
-    '''
+    
     
     #cluster_nlu_instances_multiple_text_records_shards_downsampled(kmeans, ipca_transformer)
     
-    evaluate_banking77('banking77', 'train')
-    #augment_banking77('banking77', 'train')
+    # -------------------------------------------
+    
+    #evaluate_banking77('clinc150-k5', 'train')
+    #augment_banking77_similar_stopwords('clinc150-k5', 'train')
     
     #evaluate_clinc150('clinc150', 'train')
     #augment_clinc150('clinc150', 'train')
     
+    # --------------------------------------------
+    
     #cluster_embeddings_2k()
     #compressed_construct_bins_2k()
     
+    #cluster_embeddings_512()
+    #compressed_construct_bins_512()
+    
     # v | Num examples loaded: 131242713 | Num examples processed: 131242713 | Num dumped examples: 131242713 | Total time: 15128.652122735977 <- clustering all examples into 2048 clusters
+    
+    #branch_clusters(os.path.join(DATASET_DIR, 'bins-compressed'))
     
 
 if __name__ == '__main__':
